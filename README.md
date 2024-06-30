@@ -1,11 +1,13 @@
 # Task Automate
 
-Task Automate is a Python-based GUI application that allows users to input natural language commands and automatically generates and executes Python scripts. 
+Task Automate is a Python-based GUI application that allows users to input natural language commands and automatically generates and executes Python scripts.
+It enables users to automate various functionalities of their Windows PC using natural language.
 It leverages the Gemini AI API to create scripts based on user input and handles library installations as needed.
 
 ## Features
 
 - **Natural Language Input**: Enter commands in plain English, and the application generates the corresponding Python script.
+- **PC Automation**: Automate various functionalities of Windows PC using natural language.
 - **Automatic Library Installation**: Identifies required libraries from the generated script and installs them if not already present.
 - **Execution Logging**: Displays logs of requests sent to the AI model, responses received, and script execution details.
 - **Modern GUI**: Built with Tkinter and ttk for a clean and modern interface.
