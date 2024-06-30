@@ -1,0 +1,5 @@
+tk
+google-generativeai
+requests
+beautifulsoup4
+pywin32
