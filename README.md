@@ -11,7 +11,7 @@ It leverages the Gemini AI API to create scripts based on user input and handles
 - **Automatic Library Installation**: Identifies required libraries from the generated script and installs them if not already present.
 - **Execution Logging**: Displays logs of requests sent to the AI model, responses received, and script execution details.
 - **Modern GUI**: Built with Tkinter and ttk for a clean and modern interface.
-
+![alt text](image.png)
 ## Installation
 
 1. **Clone the Repository**:
