@@ -12,6 +12,9 @@ import threading
 import json
 import pyperclip
 from PIL import Image
+import markdown2
+from threading import Lock
+import io
 
 class APIHandler:
     def __init__(self):
@@ -50,10 +53,13 @@ class APIHandler:
             messagebox.showwarning("Warning", "API key not changed.")
 
 class CodeGenerator:
-    def __init__(self, model, log_output, progress_var):
+    def __init__(self, model, log_output, progress_var, api_tracker):
         self.model = model
         self.log_output = log_output
         self.progress_var = progress_var
+        self.api_tracker = api_tracker
+        
+        
 
     def generate_code(self, user_input, file_path):
         prompt = f"Write a Python script/program to {user_input}. Only give code and nothing else."
@@ -61,8 +67,9 @@ class CodeGenerator:
         if file_path:
             self.log_output.insert(tk.END, f"File attached: {file_path}\n")
         self.log_output.see(tk.END)
-
+        self.api_tracker.add_request()
         self.progress_var.set(0)
+        
         def generate_code_thread():
             try:
                 chat = self.model.start_chat(history=[])
@@ -156,11 +163,12 @@ class CodeGenerator:
         self.log_output.see(tk.END)
 
 class QAHandler:
-    def __init__(self, model, log_output, progress_var, copy_button):
+    def __init__(self, model, log_output, progress_var, copy_button, api_tracker):
         self.model = model
         self.log_output = log_output
         self.progress_var = progress_var
         self.copy_button = copy_button  # Assign copy_button attribute
+        self.api_tracker = api_tracker
 
     def qa_mode(self, user_input, file_path):
         self.log_output.insert(tk.END, f"Question: {user_input}\n")
@@ -168,12 +176,11 @@ class QAHandler:
             self.log_output.insert(tk.END, f"File attached: {file_path}\n")
         self.log_output.see(tk.END)
         
-        # Ensure self.copy_button is accessed correctly
         if self.copy_button:
             self.copy_button.config(state='disabled')
         else:
             print("self.copy_button is None or not initialized properly")
-
+        self.api_tracker.add_request()
         self.progress_var.set(0)
 
         def qa_mode_thread():
@@ -183,7 +190,8 @@ class QAHandler:
                 if file_path:
                     with open(file_path, 'rb') as file:
                         file_content = file.read()
-                    response = chat.send_message([user_input, file_content], stream=True)
+                    image = Image.open(io.BytesIO(file_content))  # Convert bytes to PIL Image
+                    response = chat.send_message([user_input, image], stream=True)
                 else:
                     response = chat.send_message(user_input, stream=True)
 
@@ -193,11 +201,11 @@ class QAHandler:
                         answer += chunk.text
                     self.progress_var.set(min(self.progress_var.get() + 10, 90))
 
+                answer = self.process_markdown(answer)  # Process Markdown in the answer
                 self.log_output.insert(tk.END, f"Answer: {answer}\n")
                 self.log_output.insert(tk.END, "_" * 80 + "\n")
                 self.log_output.see(tk.END)
                 
-                # Ensure self.copy_button is accessed correctly
                 if self.copy_button:
                     self.copy_button.config(state='normal')
                 else:
@@ -211,10 +219,43 @@ class QAHandler:
 
         threading.Thread(target=qa_mode_thread).start()
 
+    def process_markdown(self, text):
+        # Convert markdown to HTML
+        html = markdown2.markdown(text)
+        
+        # Basic HTML to text conversion (you might want to expand this)
+        html = html.replace('<p>', '').replace('</p>', '\n')
+        html = html.replace('<strong>', '').replace('</strong>', '')
+        html = html.replace('<em>', '').replace('</em>', '')
+        html = html.replace('<code>', '`').replace('</code>', '`')
+        
+        # Handle code blocks
+        lines = html.split('\n')
+        in_code_block = False
+        processed_lines = []
+        for line in lines:
+            if line.strip() == '<pre><code>':
+                in_code_block = True
+                processed_lines.append('```')
+            elif line.strip() == '</code></pre>':
+                in_code_block = False
+                processed_lines.append('```')
+            elif in_code_block:
+                processed_lines.append(line)
+            else:
+                processed_lines.append(line)
+        
+        return '\n'.join(processed_lines)
+    
 class ScriptManager:
     def __init__(self, log_output, saved_scripts_listbox):
         self.log_output = log_output
         self.saved_scripts_listbox = saved_scripts_listbox
+        self.scripts_folder = os.path.join(os.path.dirname(__file__), "automated_scripts")
+
+        # Ensure the folder exists
+        if not os.path.exists(self.scripts_folder):
+            os.makedirs(self.scripts_folder)
 
     def save_code(self, script_name, generated_code):
         if not generated_code.strip():
@@ -225,7 +266,7 @@ class ScriptManager:
             messagebox.showerror("Error", "Please enter a script name.")
             return
 
-        script_file = os.path.join(os.path.dirname(__file__), f"{script_name}.py")
+        script_file = os.path.join(self.scripts_folder, f"{script_name}.py")
 
         def save_code_thread():
             with open(script_file, "w") as file:
@@ -241,10 +282,11 @@ class ScriptManager:
     def load_saved_script(self):
         selected_item = self.saved_scripts_listbox.selection()
         if selected_item:
-            script_name = self.saved_scripts_listbox.item(selected_item)['text']
+            script_name = self.saved_scripts_listbox.item(selected_item, 'text')
+            script_file = os.path.join(self.scripts_folder, f"{script_name}.py")
 
             try:
-                with open(os.path.join(os.path.dirname(__file__), f"{script_name}.py"), "r") as file:
+                with open(script_file, "r") as file:
                     script_code = file.read()
 
                 self.log_output.delete("1.0", tk.END)
@@ -254,7 +296,7 @@ class ScriptManager:
 
                 exec(script_code)
             except FileNotFoundError:
-                self.log_output.insert(tk.END, f"Error: '{script_name}.py' not found.\n")
+                self.log_output.insert(tk.END, f"Error: '{script_name}.py' not found at '{script_file}'.\n")
                 self.log_output.see(tk.END)
             except Exception as e:
                 self.log_output.insert(tk.END, f"An error occurred while loading or executing '{script_name}.py': {e}\n")
@@ -265,8 +307,8 @@ class ScriptManager:
     def delete_saved_script(self):
         selected_item = self.saved_scripts_listbox.selection()
         if selected_item:
-            script_name = self.saved_scripts_listbox.item(selected_item)['text']
-            script_file = os.path.join(os.path.dirname(__file__), f"{script_name}.py")
+            script_name = self.saved_scripts_listbox.item(selected_item, 'text')
+            script_file = os.path.join(self.scripts_folder, f"{script_name}.py")
             
             if os.path.exists(script_file):
                 os.remove(script_file)
@@ -278,143 +320,185 @@ class ScriptManager:
         else:
             messagebox.showerror("Error", "Please select a script to delete.")
 
+class APITracker:
+    def __init__(self, rpm_limit=15):
+        self.rpm_limit = rpm_limit
+        self.requests = []
+        self.total_requests = 0
+        self.lock = Lock()
+
+    def add_request(self):
+        with self.lock:
+            current_time = time.time()
+            self.requests = [t for t in self.requests if current_time - t < 60]
+            self.requests.append(current_time)
+            self.total_requests += 1
+
+    def get_current_rpm(self):
+        with self.lock:
+            current_time = time.time()
+            self.requests = [t for t in self.requests if current_time - t < 60]
+            return len(self.requests)
+
+    def get_total_requests(self):
+        return self.total_requests
+
+
 class GUI:
     def __init__(self, root, api_handler, code_generator, qa_handler, script_manager):
         self.root = root
+        self.api_tracker = APITracker()
         self.api_handler = api_handler
         self.code_generator = code_generator
         self.qa_handler = qa_handler
         self.script_manager = script_manager
-        self.copy_button = None
         self.setup_gui()
+        self.setup_keyboard_shortcuts()
+        self.update_api_tracker()
 
     def setup_gui(self):
         self.root.title("Task Automate")
-        self.root.geometry("1200x800")
+        self.root.geometry("1200x1000")
 
-        main_frame = ttk.Frame(self.root, padding="20 20 20 0")
+        main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill=BOTH, expand=YES)
 
-        left_pane = ttk.Frame(main_frame, padding="0 0 10 0")
-        left_pane.pack(side=LEFT, fill=BOTH, expand=YES)
+        left_pane = ttk.Frame(main_frame)
+        left_pane.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 10))
 
-        right_pane = ttk.Frame(main_frame, padding="10 0 0 0")
-        right_pane.pack(side=RIGHT, fill=BOTH, expand=YES)
+        right_pane = ttk.Frame(main_frame)
+        right_pane.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(10, 0))
 
         self.setup_input_section(left_pane)
-        self.setup_log_output(left_pane)
+        self.setup_output_section(left_pane)
         self.setup_saved_scripts_section(right_pane)
+        self.setup_api_tracker_display(self.root)
         self.setup_status_bar()
 
     def setup_input_section(self, parent):
-        input_frame = ttk.Frame(parent)
+        input_frame = ttk.LabelFrame(parent, text="Input", padding="10")
         input_frame.pack(fill=X, pady=(0, 10))
 
-        label = ttk.Label(input_frame, text="Enter your command/question:", font=('Helvetica', 12, 'bold'))
-        label.pack(anchor=W, pady=(0, 5))
-
+        ttk.Label(input_frame, text="Enter your command/question:").pack(anchor=W, pady=(0, 5))
         self.entry = ttk.Entry(input_frame, width=50, font=('Helvetica', 12))
-        self.entry.pack(fill=X, expand=YES)
+        self.entry.pack(fill=X, expand=YES, pady=(0, 10))
 
-        file_frame = ttk.Frame(parent)
-        file_frame.pack(fill=X, pady=(0, 10))
+        file_frame = ttk.Frame(input_frame)
+        file_frame.pack(fill=X)
 
         self.file_path_var = StringVar()
-        file_button = ttk.Button(file_frame, text="Select File", command=self.select_file, style='info.TButton')
-        file_button.pack(side=LEFT)
-
-        self.file_label = ttk.Label(file_frame, text="No file selected", font=('Helvetica', 10))
+        ttk.Button(file_frame, text="Select File", command=self.select_file, style='info.TButton').pack(side=LEFT)
+        self.file_label = ttk.Label(file_frame, text="No file selected")
         self.file_label.pack(side=LEFT, padx=(10, 0))
 
-        mode_frame = ttk.Frame(parent)
-        mode_frame.pack(fill=X, pady=(0, 10))
+        mode_frame = ttk.Frame(input_frame)
+        mode_frame.pack(fill=X, pady=(10, 0))
 
-        self.mode_var = StringVar(self.root)
-        self.mode_var.set("Automation")
-        mode_label = ttk.Label(mode_frame, text="Mode:", font=('Helvetica', 12))
-        mode_label.pack(side=LEFT, padx=(0, 10))
-        mode_dropdown = ttk.Combobox(mode_frame, textvariable=self.mode_var, values=["Automation", "Q/A"], state="readonly", width=15, font=('Helvetica', 12))
-        mode_dropdown.pack(side=LEFT)
+        self.mode_var = StringVar(value="Q/A")
+        ttk.Label(mode_frame, text="Mode:").pack(side=LEFT, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Automation", variable=self.mode_var, value="Automation").pack(side=LEFT, padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="Q/A", variable=self.mode_var, value="Q/A").pack(side=LEFT)
 
-        process_button = ttk.Button(parent, text="Process", command=self.process_input, style='success.TButton')
-        process_button.pack(fill=X, pady=(0, 20))
+        ttk.Button(input_frame, text="Process", command=self.process_input, style='success.TButton').pack(fill=X, pady=(10, 0))
 
-        self.script_name_frame = ttk.Frame(parent)
-        script_name_label = ttk.Label(self.script_name_frame, text="Enter script name:", font=('Helvetica', 12))
-        script_name_label.pack(anchor=W, pady=(0, 5))
+    def setup_output_section(self, parent):
+        output_frame = ttk.LabelFrame(parent, text="Output", padding="10")
+        output_frame.pack(fill=BOTH, expand=YES, pady=(10, 0))
 
-        self.script_name_entry = ttk.Entry(self.script_name_frame, font=('Helvetica', 12))
-        self.script_name_entry.pack(fill=X, expand=YES, side=LEFT)
-
-        save_button = ttk.Button(self.script_name_frame, text="Save", command=self.save_code, style='info.TButton', width=10)
-        save_button.pack(side=RIGHT, padx=(10, 0))
-
-        self.mode_var.trace('w', self.toggle_script_name_frame)
-
-        api_key_button = ttk.Button(parent, text="Change API Key", command=self.api_handler.change_api_key, style='secondary.TButton')
-        api_key_button.pack(fill=X, pady=(0, 10))
-
-    def setup_copy_button(self, parent):
-        self.copy_button = ttk.Button(parent, text="Copy Answer", command=self.copy_answer, state='disabled', style='info.TButton')
-        self.copy_button.pack(fill=X, pady=(10, 0))
-
-    def copy_answer(self):
-        answer = self.log_output.get("1.0", tk.END).split("Answer: ")[-1].split("_" * 80)[0].strip()
-        pyperclip.copy(answer)
-        self.update_status("Answer copied to clipboard")
-        
-    def setup_log_output(self, parent):
-        log_frame = ttk.LabelFrame(parent, text="Output", padding=10)
-        log_frame.pack(fill=BOTH, expand=YES)
-
-        self.log_output = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, font=('Consolas', 11))
+        self.log_output = scrolledtext.ScrolledText(output_frame, wrap=tk.WORD, font=('Consolas', 11))
         self.log_output.pack(fill=BOTH, expand=YES)
 
-        self.setup_copy_button(parent)
+        button_frame = ttk.Frame(output_frame)
+        button_frame.pack(fill=X, pady=(10, 0))
+
+        self.copy_button = ttk.Button(button_frame, text="Copy Output", command=self.copy_output, style='info.TButton')
+        self.copy_button.pack(side=LEFT, fill=X, expand=YES)
+
+        self.save_button = ttk.Button(button_frame, text="Save Script", command=self.save_code, style='info.TButton')
+        self.save_button.pack(side=RIGHT, fill=X, expand=YES, padx=(10, 0))
 
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(parent, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=X, pady=(10, 0))
 
     def setup_saved_scripts_section(self, parent):
-        saved_scripts_frame = ttk.LabelFrame(parent, text="Saved Scripts", padding=10)
-        saved_scripts_frame.pack(fill=BOTH, expand=YES)
+        scripts_frame = ttk.LabelFrame(parent, text="Saved Scripts", padding="10")
+        scripts_frame.pack(fill=BOTH, expand=YES)
 
-        self.saved_scripts_listbox = ttk.Treeview(saved_scripts_frame, selectmode="browse", show="tree", style='info.Treeview')
+        self.saved_scripts_listbox = ttk.Treeview(scripts_frame, selectmode="browse", show="tree", style='info.Treeview')
         self.saved_scripts_listbox.pack(side=LEFT, fill=BOTH, expand=YES)
 
-        listbox_scrollbar = ttk.Scrollbar(saved_scripts_frame, orient=VERTICAL, command=self.saved_scripts_listbox.yview)
-        listbox_scrollbar.pack(side=RIGHT, fill=Y)
-        self.saved_scripts_listbox.config(yscrollcommand=listbox_scrollbar.set)
+        scrollbar = ttk.Scrollbar(scripts_frame, orient=VERTICAL, command=self.saved_scripts_listbox.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        self.saved_scripts_listbox.config(yscrollcommand=scrollbar.set)
 
         button_frame = ttk.Frame(parent)
-        button_frame.pack(pady=(10, 0), fill=X)
+        button_frame.pack(fill=X, pady=(10, 0))
 
-        load_button = ttk.Button(button_frame, text="Load Selected Script", command=self.script_manager.load_saved_script, style='info.TButton')
-        load_button.pack(side=LEFT, fill=X, expand=YES)
-
-        delete_button = ttk.Button(button_frame, text="Delete Selected Script", command=self.script_manager.delete_saved_script, style='danger.TButton')
-        delete_button.pack(side=RIGHT, fill=X, expand=YES, padx=(10, 0))
+        ttk.Button(button_frame, text="Load Selected Script", command=self.load_saved_script, style='info.TButton').pack(side=LEFT, fill=X, expand=YES, padx=(0, 5))
+        ttk.Button(button_frame, text="Delete Selected Script", command=self.delete_saved_script, style='danger.TButton').pack(side=RIGHT, fill=X, expand=YES, padx=(5, 0))
 
         self.populate_saved_scripts()
 
+    def setup_api_tracker_display(self, parent):
+        tracker_frame = ttk.LabelFrame(parent, text="API Usage", padding="10")
+        tracker_frame.pack(fill=X, pady=(10, 0))
+
+        self.rpm_var = tk.IntVar()
+        self.total_requests_var = tk.IntVar()
+
+        ttk.Label(tracker_frame, text="Requests per minute:").pack(side=LEFT, padx=(0, 5))
+        self.rpm_progress = ttk.Progressbar(tracker_frame, variable=self.rpm_var, maximum=15, length=200, mode='determinate', style='info.Horizontal.TProgressbar')
+        self.rpm_progress.pack(side=LEFT, padx=(0, 10))
+
+        ttk.Label(tracker_frame, text="Total requests:").pack(side=LEFT, padx=(10, 5))
+        ttk.Label(tracker_frame, textvariable=self.total_requests_var, font=('Helvetica', 10, 'bold')).pack(side=LEFT)
+
     def setup_status_bar(self):
-        self.status_bar = ttk.Label(self.root, text="Ready", relief=tk.SUNKEN, anchor=W, font=('Helvetica', 10))
+        self.status_bar = ttk.Label(self.root, text="Ready", relief=tk.SUNKEN, anchor=W, padding=(5, 2))
         self.status_bar.pack(side=BOTTOM, fill=X)
+
+    def setup_keyboard_shortcuts(self):
+        self.root.bind('<Control-s>', lambda e: self.save_code())
+        self.root.bind('<Control-c>', lambda e: self.copy_output())
+        self.root.bind('<Return>', lambda e: self.process_input())
+        self.root.bind('<Tab>', self.focus_next_widget)
+        self.root.bind('<Shift-Tab>', self.focus_prev_widget)
+        
+        # CRTL - shortcuts
+        self.root.bind('<Control-Key-1>', lambda e: self.select_mode("Automation"))
+        self.root.bind('<Control-Key-2>', lambda e: self.select_mode("Q/A"))
+        self.root.bind('<Control-Key-3>', lambda e: self.select_first_saved_script())
+
+    def select_mode(self, mode):
+        self.mode_var.set(mode)
+        self.update_status(f"Mode changed to {mode}")
+        
+    def select_first_saved_script(self):
+        first_item = self.saved_scripts_listbox.get_children('')
+        if first_item:
+            self.saved_scripts_listbox.selection_set(first_item[0])
+            self.saved_scripts_listbox.focus(first_item[0])
+            self.update_status("First saved script selected")
+        else:
+            self.update_status("No saved scripts available")    
+    
+    def focus_next_widget(self, event):
+        event.widget.tk_focusNext().focus()
+        return "break"
+
+    def focus_prev_widget(self, event):
+        event.widget.tk_focusPrev().focus()
+        return "break"
 
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("All files", "*.*")])
         if file_path:
             self.file_path_var.set(file_path)
-            self.file_label.config(text=f"Selected file: {os.path.basename(file_path)}")
+            self.file_label.config(text=f"Selected: {file_path.split('/')[-1]}")
         else:
             self.file_path_var.set("")
             self.file_label.config(text="No file selected")
-
-    def toggle_script_name_frame(self, *args):
-        if self.mode_var.get() == "Automation":
-            self.script_name_frame.pack(fill=X, pady=(0, 20))
-        else:
-            self.script_name_frame.pack_forget()
 
     def process_input(self):
         mode = self.mode_var.get()
@@ -424,38 +508,73 @@ class GUI:
         elif mode == "Q/A":
             self.qa_handler.qa_mode(self.entry.get(), self.file_path_var.get())
         self.update_status("Ready")
-        
-    def save_code(self):
-        generated_code = self.get_generated_code()
-        script_name = self.script_name_entry.get().strip()
-        self.script_manager.save_code(script_name, generated_code)
+        self.api_tracker.add_request()
 
-    def get_generated_code(self):
-        return self.log_output.get("1.0", tk.END).split("Response Received:")[0].strip()
+    def copy_output(self):
+        output_content = self.log_output.get("1.0", tk.END)
+        pyperclip.copy(output_content)
+        self.update_status("Output copied to clipboard")
+
+    def save_code(self):
+        if self.mode_var.get() == "Automation":
+            script_name = simpledialog.askstring("Save Script", "Enter script name:")
+            if script_name:
+                generated_code = self.log_output.get("1.0", tk.END)
+                self.script_manager.save_code(script_name, generated_code)
+                self.populate_saved_scripts()
+        else:
+            self.update_status("Script saving is only available in Automation mode")
+
+    def load_saved_script(self):
+        self.script_manager.load_saved_script()
+
+    def delete_saved_script(self):
+        self.script_manager.delete_saved_script()
+        self.populate_saved_scripts()
 
     def update_status(self, message):
         self.status_bar.config(text=message)
         self.root.update_idletasks()
 
     def populate_saved_scripts(self):
-        for script_file in os.listdir(os.path.dirname(__file__)):
-            if script_file.endswith(".py") and script_file != os.path.basename(__file__):
+        self.saved_scripts_listbox.delete(*self.saved_scripts_listbox.get_children())
+        scripts_folder = self.script_manager.scripts_folder
+        for script_file in os.listdir(scripts_folder):
+            if script_file.endswith(".py"):
                 script_name = os.path.splitext(script_file)[0]
                 self.saved_scripts_listbox.insert("", "end", text=script_name)
+
+    def update_api_tracker(self):
+        current_rpm = self.api_tracker.get_current_rpm()
+        total_requests = self.api_tracker.get_total_requests()
+
+        self.rpm_var.set(current_rpm)
+        self.total_requests_var.set(total_requests)
+
+        if current_rpm >= 13:
+            self.rpm_progress.configure(style='danger.Horizontal.TProgressbar')
+        elif current_rpm >= 10:
+            self.rpm_progress.configure(style='warning.Horizontal.TProgressbar')
+        else:
+            self.rpm_progress.configure(style='info.Horizontal.TProgressbar')
+
+        self.root.after(1000, self.update_api_tracker)
+
 
 class App:
     def __init__(self):
         self.root = ttk.Window(themename="cosmo")
         self.api_handler = APIHandler()
+        self.api_tracker = APITracker()
         
         # Initialize instances before assigning them to attributes
-        self.code_generator = CodeGenerator(self.api_handler.model, None, None)
-        self.qa_handler = QAHandler(self.api_handler.model, None, None, None)  # Pass None for copy_button initially
+        self.code_generator = CodeGenerator(self.api_handler.model, None, None, self.api_tracker)
+        self.qa_handler = QAHandler(self.api_handler.model, None, None, None, self.api_tracker)
         self.script_manager = ScriptManager(None, None)
         
         # Initialize GUI after initializing dependencies
         self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager)
-        
+                
         # Now that GUI is initialized, we can set the missing attributes
         self.code_generator.log_output = self.gui.log_output
         self.code_generator.progress_var = self.gui.progress_var
