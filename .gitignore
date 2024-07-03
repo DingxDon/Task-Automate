@@ -16,3 +16,5 @@ automated_scripts/Linus.py
 automated_scripts/Chess.py
 automated_scripts/SteamWebsite.py
 automated_scripts/YT.py
+automated_scripts/Chess&Steam.py
+automated_scripts/ChessSteam.py
