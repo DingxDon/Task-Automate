@@ -17,10 +17,12 @@ from threading import Lock
 import io
 
 class APIHandler:
-    def __init__(self):
-        self.api_key = self.get_api_key()
+    def __init__(self, settings):
+        self.settings = settings
+        self.api_key = self.settings.get_setting('api_key')
         self.configure_api()
-
+        
+        
     def get_api_key(self):
         config_file = 'config.json'
         if os.path.exists(config_file):
@@ -248,10 +250,11 @@ class QAHandler:
         return '\n'.join(processed_lines)
     
 class ScriptManager:
-    def __init__(self, log_output, saved_scripts_listbox):
+    def __init__(self, log_output, saved_scripts_listbox, settings):
         self.log_output = log_output
         self.saved_scripts_listbox = saved_scripts_listbox
-        self.scripts_folder = os.path.join(os.path.dirname(__file__), "automated_scripts")
+        self.settings = settings
+        self.scripts_folder = self.settings.get_setting('script_save_location')
 
         # Ensure the folder exists
         if not os.path.exists(self.scripts_folder):
@@ -344,6 +347,44 @@ class APITracker:
         return self.total_requests
 
 
+class Settings:
+    def __init__(self):
+        self.config_file = 'config.json'
+        self.default_settings = {
+            'api_key': '',
+            'script_save_location': os.path.join(os.path.dirname(__file__), "automated_scripts"),
+            'shortcuts': {
+                'save_script': '<Control-s>',
+                'copy_output': '<Control-c>',
+                'process_input': '<Return>',
+                'select_automation': '<Control-Key-1>',
+                'select_qa': '<Control-Key-2>',
+                'select_first_script': '<Control-Key-3>',
+            }
+        }
+        self.settings = self.load_settings()
+
+    def load_settings(self):
+        if os.path.exists(self.config_file):
+            with open(self.config_file, 'r') as f:
+                return json.load(f)
+        return self.default_settings
+
+    def save_settings(self):
+        with open(self.config_file, 'w') as f:
+            json.dump(self.settings, f, indent=4)
+
+    def get_setting(self, key):
+        return self.settings.get(key, self.default_settings.get(key))
+
+    def set_setting(self, key, value):
+        self.settings[key] = value
+        self.save_settings()
+
+    def reset_to_default(self):
+        self.settings = self.default_settings.copy()
+        self.save_settings()
+
 class GUI:
     def __init__(self, root, api_handler, code_generator, qa_handler, script_manager):
         self.root = root
@@ -352,6 +393,7 @@ class GUI:
         self.code_generator = code_generator
         self.qa_handler = qa_handler
         self.script_manager = script_manager
+        self.settings = Settings()
         self.setup_gui()
         self.setup_keyboard_shortcuts()
         self.update_api_tracker()
@@ -359,6 +401,9 @@ class GUI:
     def setup_gui(self):
         self.root.title("Task Automate")
         self.root.geometry("1200x1000")
+
+        settings_button = ttk.Button(self.root, text="Settings", command=self.open_settings, style='info.TButton')
+        settings_button.pack(side=TOP, anchor=NE, padx=20, pady=10)
 
         main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill=BOTH, expand=YES)
@@ -369,11 +414,95 @@ class GUI:
         right_pane = ttk.Frame(main_frame)
         right_pane.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(10, 0))
 
+        
+
         self.setup_input_section(left_pane)
         self.setup_output_section(left_pane)
         self.setup_saved_scripts_section(right_pane)
         self.setup_api_tracker_display(self.root)
         self.setup_status_bar()
+
+    def open_settings(self):
+        settings_window = ttk.Toplevel(self.root)
+        settings_window.title("Settings")
+        settings_window.geometry("600x400")
+
+        notebook = ttk.Notebook(settings_window)
+        notebook.pack(fill=BOTH, expand=YES, padx=10, pady=10)
+
+        # Shortcuts tab
+        shortcuts_frame = ttk.Frame(notebook)
+        notebook.add(shortcuts_frame, text="Shortcuts")
+        self.setup_shortcuts_tab(shortcuts_frame)
+
+        # API Key tab
+        api_key_frame = ttk.Frame(notebook)
+        notebook.add(api_key_frame, text="API Key")
+        self.setup_api_key_tab(api_key_frame)
+
+        # Script Save Location tab
+        save_location_frame = ttk.Frame(notebook)
+        notebook.add(save_location_frame, text="Save Location")
+        self.setup_save_location_tab(save_location_frame)
+
+    def setup_shortcuts_tab(self, parent):
+        for i, (action, shortcut) in enumerate(self.settings.get_setting('shortcuts').items()):
+            ttk.Label(parent, text=f"{action.replace('_', ' ').title()}:").grid(row=i, column=0, padx=5, pady=5, sticky=W)
+            shortcut_var = StringVar(value=shortcut)
+            shortcut_entry = ttk.Entry(parent, textvariable=shortcut_var)
+            shortcut_entry.grid(row=i, column=1, padx=5, pady=5, sticky=W)
+            ttk.Button(parent, text="Change", command=lambda a=action, sv=shortcut_var: self.change_shortcut(a, sv)).grid(row=i, column=2, padx=5, pady=5)
+
+        ttk.Button(parent, text="Reset to Default", command=self.reset_shortcuts).grid(row=i+1, column=0, columnspan=3, pady=20)
+
+    def setup_api_key_tab(self, parent):
+        ttk.Label(parent, text="API Key:").pack(anchor=W, padx=10, pady=10)
+        api_key_var = StringVar(value=self.settings.get_setting('api_key'))
+        api_key_entry = ttk.Entry(parent, textvariable=api_key_var, show='*', width=50)
+        api_key_entry.pack(anchor=W, padx=10, pady=5)
+        ttk.Button(parent, text="Update API Key", command=lambda: self.update_api_key(api_key_var.get())).pack(anchor=W, padx=10, pady=10)
+
+    def setup_save_location_tab(self, parent):
+        ttk.Label(parent, text="Script Save Location:").pack(anchor=W, padx=10, pady=10)
+        save_location_var = StringVar(value=self.settings.get_setting('script_save_location'))
+        save_location_entry = ttk.Entry(parent, textvariable=save_location_var, width=50)
+        save_location_entry.pack(anchor=W, padx=10, pady=5)
+        ttk.Button(parent, text="Browse", command=lambda: self.browse_save_location(save_location_var)).pack(anchor=W, padx=10, pady=5)
+        ttk.Button(parent, text="Update Save Location", command=lambda: self.update_save_location(save_location_var.get())).pack(anchor=W, padx=10, pady=10)
+
+    def change_shortcut(self, action, shortcut_var):
+        new_shortcut = simpledialog.askstring("Change Shortcut", f"Enter new shortcut for {action}:", parent=self.root)
+        if new_shortcut:
+            shortcut_var.set(new_shortcut)
+            shortcuts = self.settings.get_setting('shortcuts')
+            shortcuts[action] = new_shortcut
+            self.settings.set_setting('shortcuts', shortcuts)
+            self.setup_keyboard_shortcuts()
+
+    def reset_shortcuts(self):
+        self.settings.reset_to_default()
+        self.setup_keyboard_shortcuts()
+        messagebox.showinfo("Reset Shortcuts", "Shortcuts have been reset to default values.")
+
+    def update_api_key(self, new_api_key):
+        self.settings.set_setting('api_key', new_api_key)
+        self.api_handler.api_key = new_api_key
+        self.api_handler.configure_api()
+        messagebox.showinfo("API Key Updated", "API Key has been updated successfully.")
+
+    def browse_save_location(self, save_location_var):
+        new_location = filedialog.askdirectory()
+        if new_location:
+            save_location_var.set(new_location)
+
+    def update_save_location(self, new_location):
+        if os.path.exists(new_location):
+            self.settings.set_setting('script_save_location', new_location)
+            self.script_manager.scripts_folder = new_location
+            messagebox.showinfo("Save Location Updated", "Script save location has been updated successfully.")
+        else:
+            messagebox.showerror("Invalid Location", "The specified location does not exist.")
+
 
     def setup_input_section(self, parent):
         input_frame = ttk.LabelFrame(parent, text="Input", padding="10")
@@ -459,16 +588,13 @@ class GUI:
         self.status_bar.pack(side=BOTTOM, fill=X)
 
     def setup_keyboard_shortcuts(self):
-        self.root.bind('<Control-s>', lambda e: self.save_code())
-        self.root.bind('<Control-c>', lambda e: self.copy_output())
-        self.root.bind('<Return>', lambda e: self.process_input())
-        self.root.bind('<Tab>', self.focus_next_widget)
-        self.root.bind('<Shift-Tab>', self.focus_prev_widget)
-        
-        # CRTL - shortcuts
-        self.root.bind('<Control-Key-1>', lambda e: self.select_mode("Automation"))
-        self.root.bind('<Control-Key-2>', lambda e: self.select_mode("Q/A"))
-        self.root.bind('<Control-Key-3>', lambda e: self.select_first_saved_script())
+        shortcuts = self.settings.get_setting('shortcuts')
+        self.root.bind(shortcuts['save_script'], lambda e: self.save_code())
+        self.root.bind(shortcuts['copy_output'], lambda e: self.copy_output())
+        self.root.bind(shortcuts['process_input'], lambda e: self.process_input())
+        self.root.bind(shortcuts['select_automation'], lambda e: self.select_mode("Automation"))
+        self.root.bind(shortcuts['select_qa'], lambda e: self.select_mode("Q/A"))
+        self.root.bind(shortcuts['select_first_script'], lambda e: self.select_first_saved_script())
 
     def select_mode(self, mode):
         self.mode_var.set(mode)
@@ -564,25 +690,25 @@ class GUI:
 class App:
     def __init__(self):
         self.root = ttk.Window(themename="cosmo")
-        self.api_handler = APIHandler()
+        self.settings = Settings()
+        self.api_handler = APIHandler(self.settings)
         self.api_tracker = APITracker()
         
-        # Initialize instances before assigning them to attributes
         self.code_generator = CodeGenerator(self.api_handler.model, None, None, self.api_tracker)
         self.qa_handler = QAHandler(self.api_handler.model, None, None, None, self.api_tracker)
-        self.script_manager = ScriptManager(None, None)
+        self.script_manager = ScriptManager(None, None, self.settings)
         
-        # Initialize GUI after initializing dependencies
         self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager)
-                
+        
         # Now that GUI is initialized, we can set the missing attributes
         self.code_generator.log_output = self.gui.log_output
         self.code_generator.progress_var = self.gui.progress_var
         self.qa_handler.log_output = self.gui.log_output
         self.qa_handler.progress_var = self.gui.progress_var
-        self.qa_handler.copy_button = self.gui.copy_button  # Assign copy_button to QAHandler
+        self.qa_handler.copy_button = self.gui.copy_button
         self.script_manager.log_output = self.gui.log_output
         self.script_manager.saved_scripts_listbox = self.gui.saved_scripts_listbox
+
     def run(self):
         self.root.mainloop()
 
