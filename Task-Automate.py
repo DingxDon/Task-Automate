@@ -15,6 +15,49 @@ from PIL import Image
 import markdown2
 from threading import Lock
 import io
+import sys 
+from packaging import version
+import requests
+
+class UpdateHandler:
+    def __init__(self, current_version, repo_owner, repo_name):
+        self.current_version = current_version
+        self.repo_owner = 'DingxDon'
+        self.repo_name = 'Task-Automate'
+        self.github_api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/latest"
+
+    def check_for_updates(self):
+        try:
+            response = requests.get(self.github_api_url)
+            response.raise_for_status()
+            latest_release = response.json()
+            latest_version = latest_release['tag_name'].lstrip('v')
+            
+            if version.parse(latest_version) > version.parse(self.current_version):
+                return latest_version, latest_release['assets'][0]['browser_download_url']
+            else:
+                return None, None
+        except requests.RequestException as e:
+            print(f"Error checking for updates: {e}")
+            return None, None
+
+    def download_and_install_update(self, download_url):
+        try:
+            response = requests.get(download_url)
+            response.raise_for_status()
+            
+            with open("TaskAutomate_new.py", "wb") as f:
+                f.write(response.content)
+            
+            # Replace the current script with the new one
+            subprocess.Popen([sys.executable, "TaskAutomate_new.py"])
+            sys.exit()
+        except requests.RequestException as e:
+            print(f"Error downloading update: {e}")
+            return False
+        except Exception as e:
+            print(f"Error installing update: {e}")
+            return False
 
 class APIHandler:
     def __init__(self, settings):
@@ -385,25 +428,33 @@ class Settings:
         self.save_settings()
 
 class GUI:
-    def __init__(self, root, api_handler, code_generator, qa_handler, script_manager):
+    def __init__(self, root, api_handler, code_generator, qa_handler, script_manager, update_handler):
         self.root = root
         self.api_tracker = APITracker()
         self.api_handler = api_handler
         self.code_generator = code_generator
         self.qa_handler = qa_handler
         self.script_manager = script_manager
+        self.update_handler = update_handler
         self.settings = Settings()
         self.setup_gui()
         self.setup_keyboard_shortcuts()
+        self.update_api_tracker()
         self.update_api_tracker()
 
     def setup_gui(self):
         self.root.title("Task Automate")
         self.root.geometry("1200x1000")
 
-        settings_button = ttk.Button(self.root, text="Settings", command=self.open_settings, style='info.TButton')
-        settings_button.pack(side=TOP, anchor=NE, padx=20, pady=10)
+        settings_frame = ttk.Frame(self.root)
+        settings_frame.pack(side=TOP, anchor=NE, padx=20, pady=10)
 
+        settings_button = ttk.Button(settings_frame, text="Settings", command=self.open_settings, style='info.TButton')
+        settings_button.pack(side=LEFT, padx=(0, 10))
+
+        update_button = ttk.Button(settings_frame, text="Check for Updates", command=self.check_for_updates, style='info.TButton')
+        update_button.pack(side=LEFT)
+        
         main_frame = ttk.Frame(self.root, padding="20")
         main_frame.pack(fill=BOTH, expand=YES)
 
@@ -421,6 +472,24 @@ class GUI:
         self.setup_api_tracker_display(self.root)
         self.setup_status_bar()
 
+    def check_for_updates(self):
+        self.update_status("Checking for updates...")
+        latest_version, download_url = self.update_handler.check_for_updates()
+        
+        if latest_version:
+            if messagebox.askyesno("Update Available", f"A new version ({latest_version}) is available. Do you want to update?"):
+                self.update_status("Downloading and installing update...")
+                if self.update_handler.download_and_install_update(download_url):
+                    messagebox.showinfo("Update Successful", "The application has been updated and will now restart.")
+                else:
+                    messagebox.showerror("Update Failed", "Failed to update the application. Please try again later.")
+            else:
+                self.update_status("Update cancelled")
+        else:
+            messagebox.showinfo("No Updates", "You are using the latest version.")
+        
+        self.update_status("Ready")
+        
     def open_settings(self):
         settings_window = ttk.Toplevel(self.root)
         settings_window.title("Settings")
@@ -733,6 +802,7 @@ class GUI:
 
 class App:
     def __init__(self):
+        self.current_version = "1.0.0"  # Set your current version here
         self.root = ttk.Window(themename="cosmo")
         self.settings = Settings()
         self.api_handler = APIHandler(self.settings)
@@ -742,9 +812,11 @@ class App:
         self.qa_handler = QAHandler(self.api_handler.model, None, None, None, self.api_tracker)
         self.script_manager = ScriptManager(None, None, self.settings)
         
-        self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager)
+        self.update_handler = UpdateHandler(self.current_version, "YourGitHubUsername", "TaskAutomate")
         
-        # Now that GUI is initialized, we can set the missing attributes
+        self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager, self.update_handler)
+        
+        # Set the missing attributes
         self.code_generator.log_output = self.gui.log_output
         self.code_generator.progress_var = self.gui.progress_var
         self.qa_handler.log_output = self.gui.log_output
@@ -755,7 +827,6 @@ class App:
 
     def run(self):
         self.root.mainloop()
-
 if __name__ == "__main__":
     app = App()
     app.run()
