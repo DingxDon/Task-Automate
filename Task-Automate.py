@@ -61,7 +61,16 @@ class CodeGenerator:
         self.progress_var = progress_var
         self.api_tracker = api_tracker
         
-        
+    def generate_web_content(self, prompt):
+        chat = self.model.start_chat(history=[])
+        response = chat.send_message(prompt, stream=True)
+
+        generated_content = ""
+        for chunk in response:
+            if hasattr(chunk, 'text'):
+                generated_content += chunk.text
+
+        return generated_content    
 
     def generate_code(self, user_input, file_path):
         prompt = f"Write a Python script/program to {user_input}. Only give code and nothing else."
@@ -527,6 +536,7 @@ class GUI:
         ttk.Label(mode_frame, text="Mode:").pack(side=LEFT, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Automation", variable=self.mode_var, value="Automation").pack(side=LEFT, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Q/A", variable=self.mode_var, value="Q/A").pack(side=LEFT)
+        ttk.Radiobutton(mode_frame, text="Web Development", variable=self.mode_var, value="Web Development").pack(side=LEFT)
 
         ttk.Button(input_frame, text="Process", command=self.process_input, style='success.TButton').pack(fill=X, pady=(10, 0))
 
@@ -633,9 +643,76 @@ class GUI:
             self.code_generator.generate_code(self.entry.get(), self.file_path_var.get())
         elif mode == "Q/A":
             self.qa_handler.qa_mode(self.entry.get(), self.file_path_var.get())
+        elif mode == "Web Development":
+            self.generate_web_files(self.entry.get())
         self.update_status("Ready")
         self.api_tracker.add_request()
 
+    def generate_web_files(self, user_input):
+        prompt = f"Generate HTML, CSS, and JavaScript files for a web page that {user_input}. Provide the content for each file separately."
+        self.log_output.insert(tk.END, f"Request Sent: {prompt}\n")
+        self.log_output.see(tk.END)
+        self.api_tracker.add_request()
+        self.progress_var.set(0)
+
+        def generate_web_files_thread():
+            try:
+                chat = self.code_generator.model.start_chat(history=[])
+                response = chat.send_message(prompt, stream=True)
+
+                generated_content = ""
+                for chunk in response:
+                    if hasattr(chunk, 'text'):
+                        generated_content += chunk.text
+                    self.progress_var.set(min(self.progress_var.get() + 10, 90))
+
+                # Parse the generated content to separate HTML, CSS, and JS
+                html_content = self.extract_content(generated_content, "HTML")
+                css_content = self.extract_content(generated_content, "CSS")
+                js_content = self.extract_content(generated_content, "JavaScript")
+
+                # Create a new folder for the web files
+                folder_name = simpledialog.askstring("Folder Name", "Enter a name for the web project folder:")
+                if folder_name:
+                    folder_path = os.path.join(self.script_manager.scripts_folder, folder_name)
+                    os.makedirs(folder_path, exist_ok=True)
+
+                    # Save the files
+                    self.save_web_file(folder_path, "index.html", html_content)
+                    self.save_web_file(folder_path, "styles.css", css_content)
+                    self.save_web_file(folder_path, "script.js", js_content)
+
+                    self.log_output.insert(tk.END, f"Web files generated and saved in folder: {folder_path}\n")
+                else:
+                    self.log_output.insert(tk.END, "Web file generation cancelled.\n")
+
+                self.log_output.see(tk.END)
+
+            except Exception as e:
+                self.log_output.insert(tk.END, f"An error occurred: {e}\n")
+                self.log_output.see(tk.END)
+
+            self.progress_var.set(100)
+
+        threading.Thread(target=generate_web_files_thread).start()
+    
+    def extract_content(self, content, file_type):
+        start_marker = f"```{file_type.lower()}"
+        end_marker = "```"
+        start_index = content.find(start_marker)
+        if start_index != -1:
+            start_index += len(start_marker)
+            end_index = content.find(end_marker, start_index)
+            if end_index != -1:
+                return content[start_index:end_index].strip()
+        return ""
+
+    def save_web_file(self, folder_path, file_name, content):
+        file_path = os.path.join(folder_path, file_name)
+        with open(file_path, 'w') as f:
+            f.write(content)
+        self.log_output.insert(tk.END, f"Saved {file_name}\n")
+        
     def copy_output(self):
         output_content = self.log_output.get("1.0", tk.END)
         pyperclip.copy(output_content)
@@ -645,11 +722,44 @@ class GUI:
         if self.mode_var.get() == "Automation":
             script_name = simpledialog.askstring("Save Script", "Enter script name:")
             if script_name:
-                generated_code = self.log_output.get("1.0", tk.END)
-                self.script_manager.save_code(script_name, generated_code)
-                self.populate_saved_scripts()
+                # Get the content from the log output
+                content = self.log_output.get("1.0", tk.END).strip()
+                
+                # Extract only the generated code
+                generated_code = self.extract_generated_code(content)
+                
+                if generated_code:
+                    # Show the code to be saved and ask for confirmation
+                    confirm = messagebox.askyesno("Confirm Save", f"The following code will be saved:\n\n{generated_code}\n\nDo you want to proceed?")
+                    if confirm:
+                        # Save the code
+                        self.script_manager.save_code(script_name, generated_code)
+                        self.populate_saved_scripts()
+                        self.update_status(f"Script '{script_name}' saved successfully")
+                    else:
+                        self.update_status("Save operation cancelled")
+                else:
+                    messagebox.showwarning("No Code Found", "No valid Python code found to save. Please generate some code first.")
         else:
             self.update_status("Script saving is only available in Automation mode")
+
+    def extract_generated_code(self, content):
+        # Split the content by lines
+        lines = content.split('\n')
+        
+        # Find the start and end of the generated code
+        code_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line.startswith("import ") or stripped_line.startswith("from "):
+                code_lines = [line]  # Start collecting code from this line
+            elif code_lines:
+                if stripped_line.startswith("Response Received:") or stripped_line.startswith("_"):
+                    break  # Stop collecting code when we hit "Response Received:" or a line of underscores
+                if stripped_line and not stripped_line.startswith("Execution time:"):
+                    code_lines.append(line)
+        
+        return "\n".join(code_lines).strip() if code_lines else None
 
     def load_saved_script(self):
         self.script_manager.load_saved_script()

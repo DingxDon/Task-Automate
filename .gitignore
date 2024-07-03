@@ -13,3 +13,6 @@ config.json
 Task_Automate5.py
 automated_scripts/NewOpenYoutube.py
 automated_scripts/Linus.py
+automated_scripts/Chess.py
+automated_scripts/SteamWebsite.py
+automated_scripts/YT.py
