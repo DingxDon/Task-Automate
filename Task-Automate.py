@@ -402,10 +402,19 @@ class Settings:
                 'select_automation': '<Control-Key-1>',
                 'select_qa': '<Control-Key-2>',
                 'select_first_script': '<Control-Key-3>',
-            }
+                'refresh' : '<Control-r>'
+            } 
         }
         self.settings = self.load_settings()
 
+    def update_shortcuts(self):
+        current_shortcuts = self.settings.get('shortcuts', {})
+        for key, value in self.default_settings['shortcuts'].items():
+            if key not in current_shortcuts:
+                current_shortcuts[key] = value
+        self.settings['shortcuts'] = current_shortcuts
+        self.save_settings()
+        
     def load_settings(self):
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r') as f:
@@ -417,8 +426,13 @@ class Settings:
             json.dump(self.settings, f, indent=4)
 
     def get_setting(self, key):
+        if key == 'shortcuts':
+        # Merge the default shortcuts with the saved shortcuts
+            default_shortcuts = self.default_settings['shortcuts']
+            saved_shortcuts = self.settings.get('shortcuts', {})
+            return {**default_shortcuts, **saved_shortcuts}
         return self.settings.get(key, self.default_settings.get(key))
-
+        
     def set_setting(self, key, value):
         self.settings[key] = value
         self.save_settings()
@@ -442,6 +456,7 @@ class GUI:
         self.update_api_tracker()
         self.update_api_tracker()
 
+
     def setup_gui(self):
         self.root.title("Task Automate")
         self.root.geometry("1200x1000")
@@ -464,14 +479,57 @@ class GUI:
         right_pane = ttk.Frame(main_frame)
         right_pane.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(10, 0))
 
-        
-
         self.setup_input_section(left_pane)
         self.setup_output_section(left_pane)
         self.setup_saved_scripts_section(right_pane)
         self.setup_api_tracker_display(self.root)
         self.setup_status_bar()
+        self.set_tab_order()
+        
+    def set_tab_order(self):
+        if hasattr(self, 'entry') and hasattr(self, 'saved_scripts_listbox'):
+            self.entry.lift()
+            self.saved_scripts_listbox.lift()
+            self.root.lift()
 
+            # Set tab order
+            self.entry.focus_set()
+            self.entry.bind("<Tab>", lambda e: self.focus_next_main_widget(e))
+            self.saved_scripts_listbox.bind("<Tab>", lambda e: self.focus_next_main_widget(e))
+            self.entry.bind("<Shift-Tab>", lambda e: self.focus_prev_main_widget(e))
+            self.saved_scripts_listbox.bind("<Shift-Tab>", lambda e: self.focus_prev_main_widget(e))
+        else:
+            print("Warning: 'entry' or 'saved_scripts_listbox' not found. Tab order not set.")
+            
+
+    def focus_next_main_widget(self, event):
+        if event.widget == self.entry:
+            self.saved_scripts_listbox.focus_set()
+            self.select_first_saved_script()
+        elif event.widget == self.saved_scripts_listbox:
+            self.entry.focus_set()
+        return "break"  # This prevents the default tab behavior
+
+    def select_first_saved_script(self):
+        children = self.saved_scripts_listbox.get_children()
+        if children:
+            first_item = children[0]
+            self.saved_scripts_listbox.focus(first_item)
+            self.saved_scripts_listbox.selection_set(first_item)
+        
+    def focus_prev_main_widget(self, event):
+        if event.widget == self.entry:
+            self.saved_scripts_listbox.focus_set()
+            self.select_first_saved_script()
+        elif event.widget == self.saved_scripts_listbox:
+            self.entry.focus_set()
+        return "break"  # This prevents the default tab behavior
+    
+    def highlight_selected_script(self, event):
+        selected = self.saved_scripts_listbox.selection()
+        if selected:
+            self.saved_scripts_listbox.focus(selected[0])
+    
     def check_for_updates(self):
         self.update_status("Checking for updates...")
         latest_version, download_url = self.update_handler.check_for_updates()
@@ -493,7 +551,7 @@ class GUI:
     def open_settings(self):
         settings_window = ttk.Toplevel(self.root)
         settings_window.title("Settings")
-        settings_window.geometry("600x400")
+        settings_window.geometry("600x500")
 
         notebook = ttk.Notebook(settings_window)
         notebook.pack(fill=BOTH, expand=YES, padx=10, pady=10)
@@ -580,6 +638,9 @@ class GUI:
         self.entry = ttk.Entry(input_frame, width=50, font=('Helvetica', 12))
         self.entry.pack(fill=X, expand=YES, pady=(0, 10))
 
+        # Set focus to entry widget
+        self.entry.focus_set()
+
         file_frame = ttk.Frame(input_frame)
         file_frame.pack(fill=X)
 
@@ -597,6 +658,11 @@ class GUI:
         ttk.Radiobutton(mode_frame, text="Q/A", variable=self.mode_var, value="Q/A").pack(side=LEFT)
 
         ttk.Button(input_frame, text="Process", command=self.process_input, style='success.TButton').pack(fill=X, pady=(10, 0))
+
+    def clear_input_output(self):
+        self.entry.delete(0, tk.END)
+        self.log_output.delete("1.0", tk.END)
+        self.update_status("Input and output cleared")
 
     def setup_output_section(self, parent):
         output_frame = ttk.LabelFrame(parent, text="Output", padding="10")
@@ -622,9 +688,20 @@ class GUI:
         scripts_frame = ttk.LabelFrame(parent, text="Saved Scripts", padding="10")
         scripts_frame.pack(fill=BOTH, expand=YES)
 
+        # Search 
+        search_frame = ttk.Frame(scripts_frame)
+        search_frame.pack(fill=X, pady=(0, 10))
+    
+        self.script_search_var = tk.StringVar() 
+        self.script_search_var.trace("w", self.filter_scripts)
+        search_entry = ttk.Entry(search_frame, textvariable=self.script_search_var, width=30)
+        search_entry.pack(side=LEFT, fill=X, expand=YES)
+        #ttk.Label(search_frame, text="🔍").pack(side=LEFT, padx=(5, 0))
+
+
         self.saved_scripts_listbox = ttk.Treeview(scripts_frame, selectmode="browse", show="tree", style='info.Treeview')
         self.saved_scripts_listbox.pack(side=LEFT, fill=BOTH, expand=YES)
-
+        self.saved_scripts_listbox.bind("<<TreeviewSelect>>", self.highlight_selected_script)
         scrollbar = ttk.Scrollbar(scripts_frame, orient=VERTICAL, command=self.saved_scripts_listbox.yview)
         scrollbar.pack(side=RIGHT, fill=Y)
         self.saved_scripts_listbox.config(yscrollcommand=scrollbar.set)
@@ -637,6 +714,14 @@ class GUI:
 
         self.populate_saved_scripts()
 
+    def filter_scripts(self, *args):
+        search_term = self.script_search_var.get().lower()
+        self.saved_scripts_listbox.delete(*self.saved_scripts_listbox.get_children())
+        scripts_folder = self.script_manager.scripts_folder
+        for script_file in os.listdir(scripts_folder):
+            if script_file.endswith(".py") and search_term in script_file.lower():
+                script_name = os.path.splitext(script_file)[0]
+                self.saved_scripts_listbox.insert("", "end", text=script_name)
     def setup_api_tracker_display(self, parent):
         tracker_frame = ttk.LabelFrame(parent, text="API Usage", padding="10")
         tracker_frame.pack(fill=X, pady=(10, 0))
@@ -657,13 +742,21 @@ class GUI:
 
     def setup_keyboard_shortcuts(self):
         shortcuts = self.settings.get_setting('shortcuts')
-        self.root.bind(shortcuts['save_script'], lambda e: self.save_code())
-        self.root.bind(shortcuts['copy_output'], lambda e: self.copy_output())
-        self.root.bind(shortcuts['process_input'], lambda e: self.process_input())
-        self.root.bind(shortcuts['select_automation'], lambda e: self.select_mode("Automation"))
-        self.root.bind(shortcuts['select_qa'], lambda e: self.select_mode("Q/A"))
-        self.root.bind(shortcuts['select_first_script'], lambda e: self.select_first_saved_script())
-
+        shortcut_bindings = [
+            ('save_script', self.save_code),
+            ('copy_output', self.copy_output),
+            ('process_input', self.process_input),
+            ('select_automation', lambda: self.select_mode("Automation")),
+            ('select_qa', lambda: self.select_mode("Q/A")),
+            ('select_first_script', self.select_first_saved_script),
+            ('refresh', self.clear_input_output)
+        ]
+        for shortcut_name, function in shortcut_bindings:
+            if shortcut_name in shortcuts:
+                self.root.bind(shortcuts[shortcut_name], lambda e, f=function: f())
+     
+    
+            
     def select_mode(self, mode):
         self.mode_var.set(mode)
         self.update_status(f"Mode changed to {mode}")
@@ -677,13 +770,6 @@ class GUI:
         else:
             self.update_status("No saved scripts available")    
     
-    def focus_next_widget(self, event):
-        event.widget.tk_focusNext().focus()
-        return "break"
-
-    def focus_prev_widget(self, event):
-        event.widget.tk_focusPrev().focus()
-        return "break"
 
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("All files", "*.*")])
@@ -695,14 +781,17 @@ class GUI:
             self.file_label.config(text="No file selected")
 
     def process_input(self):
-        mode = self.mode_var.get()
-        self.update_status("Processing...")
-        if mode == "Automation":
-            self.code_generator.generate_code(self.entry.get(), self.file_path_var.get())
-        elif mode == "Q/A":
-            self.qa_handler.qa_mode(self.entry.get(), self.file_path_var.get())
-        self.update_status("Ready")
-        self.api_tracker.add_request()
+        if self.root.focus_get() == self.saved_scripts_listbox:
+            self.load_saved_script()
+        else:
+            mode = self.mode_var.get()
+            self.update_status("Processing...")
+            if mode == "Automation":
+                self.code_generator.generate_code(self.entry.get(), self.file_path_var.get())
+            elif mode == "Q/A":
+                self.qa_handler.qa_mode(self.entry.get(), self.file_path_var.get())
+            self.update_status("Ready")
+            self.api_tracker.add_request()
     
     def extract_content(self, content, file_type):
         start_marker = f"```{file_type.lower()}"
@@ -765,8 +854,49 @@ class GUI:
         return "\n".join(code_lines).strip() if code_lines else None
 
     def load_saved_script(self):
-        self.script_manager.load_saved_script()
+        selected_items = self.saved_scripts_listbox.selection()
+        if selected_items:
+            script_name = self.saved_scripts_listbox.item(selected_items[0], 'text')
+            self.load_script(script_name)
+        else:
+            messagebox.showerror("Error", "Please select a script to load.")
+                
+    def load_selected_script(self, event):
+        self.load_saved_script()
+        return 'break'  # Prevents the event from propagating
+  
+    def load_script(self, script_name):
+        script_file = os.path.join(self.script_manager.scripts_folder, f"{script_name}.py")
+        try:
+            with open(script_file, "r") as file:
+                script_code = file.read()
 
+            self.log_output.delete("1.0", tk.END)
+            self.log_output.insert(tk.END, script_code)
+            self.log_output.insert(tk.END, f"\nLoaded saved script '{script_name}.py':\n")
+            self.log_output.see(tk.END)
+
+            # Ask user if they want to execute the script
+            if messagebox.askyesno("Execute Script", "Do you want to execute the loaded script?"):
+                self.execute_script(script_code)
+            else:
+                self.log_output.insert(tk.END, "Script loaded but not executed.\n")
+
+        except FileNotFoundError:
+            self.log_output.insert(tk.END, f"Error: '{script_name}.py' not found at '{script_file}'.\n")
+        except Exception as e:
+            self.log_output.insert(tk.END, f"An error occurred while loading '{script_name}.py': {e}\n")
+        self.log_output.see(tk.END)
+
+    def execute_script(self, script_code):
+        try:
+            self.log_output.insert(tk.END, "Executing script...\n")
+            exec(script_code)
+            self.log_output.insert(tk.END, "Script execution completed.\n")
+        except Exception as e:
+            self.log_output.insert(tk.END, f"An error occurred during script execution: {e}\n")
+        self.log_output.see(tk.END)
+        
     def delete_saved_script(self):
         self.script_manager.delete_saved_script()
         self.populate_saved_scripts()
@@ -807,7 +937,7 @@ class App:
         self.settings = Settings()
         self.api_handler = APIHandler(self.settings)
         self.api_tracker = APITracker()
-        
+        self.settings.update_shortcuts()
         self.code_generator = CodeGenerator(self.api_handler.model, None, None, self.api_tracker)
         self.qa_handler = QAHandler(self.api_handler.model, None, None, None, self.api_tracker)
         self.script_manager = ScriptManager(None, None, self.settings)
