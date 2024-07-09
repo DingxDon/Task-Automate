@@ -18,6 +18,78 @@ import io
 import sys 
 from packaging import version
 import requests
+from pynput import keyboard as pynput_keyboard
+from pynput.keyboard import Key, KeyCode
+import keyboard
+import win32gui
+import win32con
+
+class PopupSearchBar:
+    def __init__(self, app):
+        self.app = app
+        self.window = None
+        
+    def create_window(self):
+        self.window = ttk.Toplevel()
+        self.window.withdraw()  # Hide the window initially
+        self.window.overrideredirect(True)
+        self.window.attributes('-topmost', True)
+
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        window_width = 600
+        window_height = 60
+        x = (screen_width - window_width) // 2
+        y = screen_height // 4
+
+        self.window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+
+        self.entry = ttk.Entry(self.window, font=('Helvetica', 14))
+        self.entry.pack(fill=BOTH, expand=YES, padx=10, pady=10)
+
+        self.entry.bind("<Return>", self.process_query)
+        self.entry.bind("<Escape>", self.close_window)
+
+        # Make the window draggable
+        self.window.bind("<ButtonPress-1>", self.start_move)
+        self.window.bind("<ButtonRelease-1>", self.stop_move)
+        self.window.bind("<B1-Motion>", self.do_move)
+
+    def show(self):
+        if not self.window:
+            self.create_window()
+        self.window.deiconify()  # Show the window
+        self.window.lift()  # Raise the window to the top
+        self.window.focus_force()  # Force focus on the window
+        self.entry.delete(0, END)
+        self.entry.focus_set()  # Set focus on the entry widget
+        
+    def close_window(self, event=None):
+        if self.window:
+            self.window.withdraw()
+        
+    def process_query(self, event=None):
+        query = self.entry.get()
+        self.app.gui.entry.delete(0, END)
+        self.app.gui.entry.insert(0, query)
+        self.app.gui.mode_var.set("Automation")  # Set mode to Automation
+        self.app.gui.process_input()  # Run the Automation task
+        self.close_window()
+        
+    def start_move(self, event):
+        self.x = event.x
+        self.y = event.y
+
+    def stop_move(self, event):
+        self.x = None
+        self.y = None
+
+    def do_move(self, event):
+        deltax = event.x - self.x
+        deltay = event.y - self.y
+        x = self.window.winfo_x() + deltax
+        y = self.window.winfo_y() + deltay
+        self.window.geometry(f"+{x}+{y}")
 
 class UpdateHandler:
     def __init__(self, current_version, repo_owner, repo_name):
@@ -442,7 +514,7 @@ class Settings:
         self.save_settings()
 
 class GUI:
-    def __init__(self, root, api_handler, code_generator, qa_handler, script_manager, update_handler):
+    def __init__(self, root, api_handler, code_generator, qa_handler, script_manager, update_handler, app):
         self.root = root
         self.api_tracker = APITracker()
         self.api_handler = api_handler
@@ -451,11 +523,17 @@ class GUI:
         self.script_manager = script_manager
         self.update_handler = update_handler
         self.settings = Settings()
+        self.app = app
+        self.mode_var = StringVar(value="Automation")
         self.setup_gui()
         self.setup_keyboard_shortcuts()
         self.update_api_tracker()
         self.update_api_tracker()
+        #self.setup_global_hotkey()
 
+    def setup_global_hotkey(self):
+        keyboard.add_hotkey('ctrl+q', self.app.show_popup_search_bar)
+        
 
     def setup_gui(self):
         self.root.title("Task Automate")
@@ -652,13 +730,13 @@ class GUI:
         mode_frame = ttk.Frame(input_frame)
         mode_frame.pack(fill=X, pady=(10, 0))
 
-        self.mode_var = StringVar(value="Q/A")
+        self.mode_var = StringVar(value="Automation")
         ttk.Label(mode_frame, text="Mode:").pack(side=LEFT, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Automation", variable=self.mode_var, value="Automation").pack(side=LEFT, padx=(0, 10))
         ttk.Radiobutton(mode_frame, text="Q/A", variable=self.mode_var, value="Q/A").pack(side=LEFT)
 
         ttk.Button(input_frame, text="Process", command=self.process_input, style='success.TButton').pack(fill=X, pady=(10, 0))
-
+        
     def clear_input_output(self):
         self.entry.delete(0, tk.END)
         self.log_output.delete("1.0", tk.END)
@@ -944,7 +1022,7 @@ class App:
         
         self.update_handler = UpdateHandler(self.current_version, "YourGitHubUsername", "TaskAutomate")
         
-        self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager, self.update_handler)
+        self.gui = GUI(self.root, self.api_handler, self.code_generator, self.qa_handler, self.script_manager, self.update_handler, self)
         
         # Set the missing attributes
         self.code_generator.log_output = self.gui.log_output
@@ -955,8 +1033,27 @@ class App:
         self.script_manager.log_output = self.gui.log_output
         self.script_manager.saved_scripts_listbox = self.gui.saved_scripts_listbox
 
+        self.popup_search_bar = PopupSearchBar(self)
+        self.setup_global_hotkey()
+
+    def setup_global_hotkey(self):
+        self.listener = pynput_keyboard.GlobalHotKeys({
+            '<ctrl>+q': self.show_popup_search_bar
+        })
+        self.listener.start()
+
+    def show_popup_search_bar(self):
+        self.root.after(0, self.popup_search_bar.show)
+
     def run(self):
         self.root.mainloop()
+
+    def on_closing(self):
+        self.listener.stop()
+        self.root.destroy()
+
+    
 if __name__ == "__main__":
     app = App()
+    app.root.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.run()
